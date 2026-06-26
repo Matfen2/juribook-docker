@@ -1,0 +1,41 @@
+# ═══════════════════════════════════════════════════════════
+#  GitHub Actions CI/CD - juribook-docker
+#  Pipeline : validation syntaxe docker-compose.yml
+# ═══════════════════════════════════════════════════════════
+
+name: CI
+ 
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+ 
+jobs:
+ 
+  validate:
+    name: Validate Docker Compose
+    runs-on: ubuntu-latest
+ 
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+ 
+      - name: Create dummy env file for validation
+        working-directory: docker
+        run: cp env/.env.example env/.env
+ 
+      - name: Validate docker-compose.yml syntax
+        working-directory: docker
+        run: docker compose -f docker-compose.yml config --quiet
+ 
+      - name: Check init-scripts exist
+        run: |
+          test -f docker/init-scripts/init-authdb.sql
+          test -f docker/init-scripts/init-lawyerdb.sql
+          test -f docker/init-scripts/init-bookingdb.sql
+          test -f docker/init-scripts/init-auditdb.sql
+          echo "Tous les scripts init SQL sont présents"
