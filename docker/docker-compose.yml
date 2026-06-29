@@ -1,0 +1,231 @@
+# ═══════════════════════════════════════════════════════════
+#  JuriBook - Docker Compose (environnement local)
+#  Lance : Kafka (KRaft), 4 bases PostgreSQL, 6 services
+#  KRaft = Kafka sans Zookeeper (natif depuis Kafka 3.3+)
+#
+#  Prérequis : copier docker/env/.env.example en docker/env/.env
+#
+#  Usage (depuis juribook-docker/docker/) :
+#    docker compose up -d                         → tout démarrer
+#    docker compose up -d postgres-auth kafka     → infra seule
+#    docker compose logs -f auth-service          → logs d'un service
+#    docker compose down -v                       → tout supprimer
+# ═══════════════════════════════════════════════════════════
+
+services:
+
+  # ─────────────────────────────────────────────
+  #  Kafka en mode KRaft (sans Zookeeper)
+  #  PLAINTEXT      → inter-conteneurs  (29092)
+  #  PLAINTEXT_HOST → accès hôte        (9092)
+  #  CONTROLLER     → coordination KRaft (9093, interne)
+  # ─────────────────────────────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: juribook-kafka
+    restart: unless-stopped
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      # Identifiant unique du cluster KRaft (généré une fois, fixe)
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qg
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks:
+      - juribook-network
+
+  # ─────────────────────────────────────────────
+  #  PostgreSQL - une base par service
+  #  Ports hôte :
+  #    auth     → localhost:5432
+  #    lawyer   → localhost:5433
+  #    booking  → localhost:5434
+  #    audit    → localhost:5435
+  # ─────────────────────────────────────────────
+  postgres-auth:
+    image: postgres:16-alpine
+    container_name: juribook-postgres-auth
+    restart: unless-stopped
+    env_file:
+      - env/.env
+    environment:
+      POSTGRES_DB: authdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-auth-data:/var/lib/postgresql/data
+      - ./init-scripts/init-authdb.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-juribook} -d authdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - juribook-network
+
+  postgres-lawyer:
+    image: postgres:16-alpine
+    container_name: juribook-postgres-lawyer
+    restart: unless-stopped
+    env_file:
+      - env/.env
+    environment:
+      POSTGRES_DB: lawyerdb
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-lawyer-data:/var/lib/postgresql/data
+      - ./init-scripts/init-lawyerdb.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-juribook} -d lawyerdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - juribook-network
+
+  postgres-booking:
+    image: postgres:16-alpine
+    container_name: juribook-postgres-booking
+    restart: unless-stopped
+    env_file:
+      - env/.env
+    environment:
+      POSTGRES_DB: bookingdb
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres-booking-data:/var/lib/postgresql/data
+      - ./init-scripts/init-bookingdb.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-juribook} -d bookingdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - juribook-network
+
+  postgres-audit:
+    image: postgres:16-alpine
+    container_name: juribook-postgres-audit
+    restart: unless-stopped
+    env_file:
+      - env/.env
+    environment:
+      POSTGRES_DB: auditdb
+    ports:
+      - "5435:5432"
+    volumes:
+      - postgres-audit-data:/var/lib/postgresql/data
+      - ./init-scripts/init-auditdb.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-juribook} -d auditdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - juribook-network
+
+  # ─────────────────────────────────────────────
+  #  Microservices
+  #  context: ../<service> → au même niveau que juribook-docker/
+  # ─────────────────────────────────────────────
+  auth-service:
+    build:
+      context: ../../juribook-auth-service
+      dockerfile: Dockerfile
+    container_name: juribook-auth
+    restart: unless-stopped
+    depends_on:
+      postgres-auth:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+    env_file:
+      - env/.env
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-auth:5432/authdb
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-juribook}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-juribook}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8081/actuator/health || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    networks:
+      - juribook-network
+
+  lawyer-service:
+    build:
+      context: ../../juribook-lawyer-service
+      dockerfile: Dockerfile
+    container_name: juribook-lawyer
+    restart: unless-stopped
+    depends_on:
+      postgres-lawyer:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+    ports:
+      - "8082:8082"
+    env_file:
+      - env/.env
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-lawyer:5432/lawyerdb
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-juribook}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-juribook}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8082/actuator/health || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    networks:
+      - juribook-network
+
+# ─────────────────────────────────────────────
+#  Volumes persistants
+# ─────────────────────────────────────────────
+volumes:
+  kafka-data:
+  postgres-auth-data:
+  postgres-lawyer-data:
+  postgres-booking-data:
+  postgres-audit-data:
+
+# ─────────────────────────────────────────────
+#  Réseau interne
+# ─────────────────────────────────────────────
+networks:
+  juribook-network:
+    driver: bridge
