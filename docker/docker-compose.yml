@@ -1,6 +1,6 @@
 # ═══════════════════════════════════════════════════════════
 #  JuriBook - Docker Compose (environnement local)
-#  Lance : Kafka (KRaft), 4 bases PostgreSQL, 6 services
+#  Lance : Kafka (KRaft), 4 bases PostgreSQL, services
 #  KRaft = Kafka sans Zookeeper (natif depuis Kafka 3.3+)
 #
 #  Prérequis : copier docker/env/.env.example en docker/env/.env
@@ -153,6 +153,7 @@ services:
   #  Microservices
   #  context: ../<service> → au même niveau que juribook-docker/
   # ─────────────────────────────────────────────
+  # Auth - Authentification et gestion des comptes
   auth-service:
     build:
       context: ../../juribook-auth-service
@@ -182,6 +183,7 @@ services:
     networks:
       - juribook-network
 
+  # Lawyer - Profils avocats, leurs avis, leurs spécialités, leurs disponibilités
   lawyer-service:
     build:
       context: ../../juribook-lawyer-service
@@ -206,6 +208,38 @@ services:
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8082/actuator/health || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    networks:
+      - juribook-network
+
+  # Booking - Disponibilités (Availability), créneaux (TimeSlot), réservations
+  booking-service:
+    build:
+      context: ../../juribook-booking-service
+      dockerfile: Dockerfile
+    container_name: juribook-booking
+    restart: unless-stopped
+    depends_on:
+      postgres-booking:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      lawyer-service:
+        condition: service_healthy
+    ports:
+      - "8083:8083"
+    env_file:
+      - env/.env
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-booking:5432/bookingdb
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-juribook}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-juribook}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8083/actuator/health || exit 1"]
       interval: 20s
       timeout: 5s
       retries: 5
