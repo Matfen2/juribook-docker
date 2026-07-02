@@ -1,6 +1,6 @@
 # ═══════════════════════════════════════════════════════════
 #  JuriBook - Docker Compose (environnement local)
-#  Lance : Kafka (KRaft), 4 bases PostgreSQL, services
+#  Lance : Kafka (KRaft), provisioning des topics, 4 bases PostgreSQL, services
 #  KRaft = Kafka sans Zookeeper (natif depuis Kafka 3.3+)
 #
 #  Prérequis : copier docker/env/.env.example en docker/env/.env
@@ -9,6 +9,7 @@
 #    docker compose up -d                         → tout démarrer
 #    docker compose up -d postgres-auth kafka     → infra seule
 #    docker compose logs -f auth-service          → logs d'un service
+#    docker compose logs kafka-init                → voir le provisioning des topics
 #    docker compose down -v                       → tout supprimer
 # ═══════════════════════════════════════════════════════════
 
@@ -19,6 +20,13 @@ services:
   #  PLAINTEXT      → inter-conteneurs  (29092)
   #  PLAINTEXT_HOST → accès hôte        (9092)
   #  CONTROLLER     → coordination KRaft (9093, interne)
+  #
+  #  Sprint 5.1 : KAFKA_AUTO_CREATE_TOPICS_ENABLE passé à "false".
+  #  Les 8 topics de la plateforme sont désormais provisionnés
+  #  explicitement par le service kafka-init (partitions + rétention
+  #  contrôlées), plus question de laisser un service créer un topic
+  #  par erreur avec les valeurs par défaut (1 partition, rétention
+  #  standard) au premier message publié.
   # ─────────────────────────────────────────────
   kafka:
     image: confluentinc/cp-kafka:7.6.1
@@ -38,7 +46,7 @@ services:
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
       KAFKA_LOG_DIRS: /var/lib/kafka/data
       # Identifiant unique du cluster KRaft (généré une fois, fixe)
       CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qg
@@ -54,12 +62,34 @@ services:
       - juribook-network
 
   # ─────────────────────────────────────────────
+  #  Provisioning des 8 topics Kafka — Sprint 5.1
+  #  Conteneur "one-shot" : tourne une fois, crée les topics
+  #  (partitions + rétention, cf. create-topics.sh), puis s'arrête.
+  #  Les services qui publient/consomment dépendent de sa complétion
+  #  réussie (condition: service_completed_successfully) plutôt que
+  #  juste de kafka étant healthy, pour éviter une race condition où
+  #  un producer démarre avant que son topic n'existe.
+  # ─────────────────────────────────────────────
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: juribook-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./kafka-init/create-topics.sh:/create-topics.sh:ro
+    entrypoint: ["sh", "/create-topics.sh"]
+    networks:
+      - juribook-network
+    restart: "no"
+
+  # ─────────────────────────────────────────────
   #  PostgreSQL - une base par service
   #  Ports hôte :
   #    auth     → localhost:5432
   #    lawyer   → localhost:5433
   #    booking  → localhost:5434
-  #    audit    → localhost:5435
+  #    notification → localhost:5435
   # ─────────────────────────────────────────────
   postgres-auth:
     image: postgres:16-alpine
@@ -163,8 +193,8 @@ services:
     depends_on:
       postgres-auth:
         condition: service_healthy
-      kafka:
-        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
     ports:
       - "8081:8081"
     env_file:
@@ -193,8 +223,8 @@ services:
     depends_on:
       postgres-lawyer:
         condition: service_healthy
-      kafka:
-        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
       auth-service:
         condition: service_healthy
     ports:
@@ -225,8 +255,8 @@ services:
     depends_on:
       postgres-booking:
         condition: service_healthy
-      kafka:
-        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
       lawyer-service:
         condition: service_healthy
     ports:
@@ -257,11 +287,11 @@ services:
     depends_on:
       postgres-notification:
         condition: service_healthy
-      kafka:
-        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
       lawyer-service:
         condition: service_healthy
-      booking-service:                              
+      booking-service:
         condition: service_healthy
     ports:
       - "8084:8084"
@@ -272,7 +302,7 @@ services:
       SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-juribook}
       SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-juribook}
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
-      BOOKING_SERVICE_BASE_URL: http://booking-service:8083 
+      BOOKING_SERVICE_BASE_URL: http://booking-service:8083
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8084/actuator/health || exit 1"]
       interval: 20s
