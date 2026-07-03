@@ -200,6 +200,29 @@ services:
     networks:
       - juribook-network
 
+  # Sprint 5.7
+  postgres-audit:
+    image: postgres:16-alpine
+    container_name: juribook-postgres-audit
+    restart: unless-stopped
+    env_file:
+      - env/.env
+    environment:
+      POSTGRES_DB: auditdb
+    ports:
+      - "5436:5432"
+    volumes:
+      - postgres-audit-data:/var/lib/postgresql/data
+      - ./init-scripts/init-auditdb.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-juribook} -d auditdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - juribook-network
+
   # ─────────────────────────────────────────────
   #  Microservices
   #  context: ../<service> → au même niveau que juribook-docker/
@@ -341,6 +364,36 @@ services:
     networks:
       - juribook-network
 
+  # Audit - journal d'audit immutable, consomme tous les topics (Sprint 5.7)
+  audit-service:
+    build:
+      context: ../../juribook-audit-service
+      dockerfile: Dockerfile
+    container_name: juribook-audit
+    restart: unless-stopped
+    depends_on:
+      postgres-audit:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    ports:
+      - "8085:8085"
+    env_file:
+      - env/.env
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-audit:5432/auditdb
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-juribook}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-juribook}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8085/actuator/health || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    networks:
+      - juribook-network
+
 # ─────────────────────────────────────────────
 #  Volumes persistants
 # ─────────────────────────────────────────────
@@ -350,6 +403,7 @@ volumes:
   postgres-lawyer-data:
   postgres-booking-data:
   postgres-notification-data:
+  postgres-audit-data:
 
 # ─────────────────────────────────────────────
 #  Réseau interne
