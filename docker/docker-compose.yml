@@ -364,7 +364,7 @@ services:
     networks:
       - juribook-network
 
-  # Audit - journal d'audit immutable, consomme tous les topics (Sprint 5.7)
+  # Audit - journal d'audit immutable, consomme tous les topics
   audit-service:
     build:
       context: ../../juribook-audit-service
@@ -387,6 +387,46 @@ services:
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8085/actuator/health || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    networks:
+      - juribook-network
+
+  # Point d'entrée unique - routage + authentification centralisée
+  api-gateway:
+    build:
+      context: ../../juribook-api-gateway
+      dockerfile: Dockerfile
+    container_name: juribook-api-gateway
+    restart: unless-stopped
+    depends_on:
+      auth-service:
+        condition: service_healthy
+      lawyer-service:
+        condition: service_healthy
+      booking-service:
+        condition: service_healthy
+      notification-service:
+        condition: service_healthy
+      audit-service:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    env_file:
+      - env/.env
+    environment:
+      # Noms de service Docker Compose (résolution DNS interne), pas
+      # localhost, chaque backend écoute sur son port habituel à
+      # l'intérieur de son propre conteneur.
+      AUTH_SERVICE_URL: http://auth-service:8081
+      LAWYER_SERVICE_URL: http://lawyer-service:8082
+      BOOKING_SERVICE_URL: http://booking-service:8083
+      NOTIFICATION_SERVICE_URL: http://notification-service:8084
+      AUDIT_SERVICE_URL: http://audit-service:8085
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/actuator/health || exit 1"]
       interval: 20s
       timeout: 5s
       retries: 5
